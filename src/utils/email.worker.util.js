@@ -12,15 +12,12 @@ const emailWorker = new Worker(
       case "registration":
         await emailService.sendRegistrationEmail(userEmail, name);
         break;
-
       case "transaction-success":
         await emailService.sendTransactionEmail(userEmail, name, amount, toAccount);
         break;
-
       case "transaction-failed":
         await emailService.sendTransactionFailedEmail(userEmail, name, amount, toAccount);
         break;
-
       default:
         logger.warn(`Unknown email job type: ${job.name}`);
     }

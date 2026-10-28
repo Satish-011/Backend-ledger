@@ -2,8 +2,11 @@ const mongoose = require("mongoose");
 const transactionModel = require("../models/transaction.model");
 const ledgerModel = require("../models/ledger.model");
 const accountModel = require("../models/account.model");
-const { queueTransactionEmail } = require("../queues/email.queue");
-const { NotFoundError, ForbiddenError } = require("../utils");
+const {
+  NotFoundError,
+  ForbiddenError,
+  queueTransactionEmail,
+} = require("../utils");
 
 /**
  * Create a new transaction

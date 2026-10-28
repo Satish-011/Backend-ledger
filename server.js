@@ -6,7 +6,7 @@ const connectDB = require("./src/config/db");
 const logger = require("./src/config/logger");
 
 // Start the email worker (processes queued emails in the background)
-require("./src/queues/email.worker");
+require("./src/utils/email.worker.util");
 
 const port = process.env.PORT || 3000;
 

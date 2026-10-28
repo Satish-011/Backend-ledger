@@ -1,10 +1,10 @@
 const User = require("../models/user.model");
-const { queueRegistrationEmail } = require("../queues/email.queue");
 const {
   ConflictError,
   BadRequestError,
   createAuthToken,
   setAuthCookie,
+  queueRegistrationEmail,
 } = require("../utils");
 
 const registerController = async (req, res, next) => {
