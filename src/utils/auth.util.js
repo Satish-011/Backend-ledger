@@ -1,5 +1,5 @@
 const jwt = require("jsonwebtoken");
-const { InternalServerError } = require("../errors");
+const { InternalServerError } = require("./error.util");
 
 const getAuthToken = (req) => {
   return req.cookies?.token || req.headers.authorization?.split(" ")[1];

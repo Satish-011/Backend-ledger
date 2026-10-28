@@ -1,5 +1,5 @@
 const accountModel = require("../models/account.model");
-const { NotFoundError } = require("../errors");
+const { NotFoundError } = require("../utils");
 
 const createAccountController = async (req, res, next) => {
   try {

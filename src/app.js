@@ -1,7 +1,7 @@
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const errorHandler = require("./middleware/error.middleware");
-const { NotFoundError } = require("./errors");
+const { NotFoundError } = require("./utils");
 const authRoutes = require("./routes/auth.routes");
 const accountRoutes = require("./routes/account.routes");
 const transactionRoutes = require("./routes/transaction.routes");

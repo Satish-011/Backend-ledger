@@ -1,4 +1,4 @@
-const { BadRequestError } = require("../errors");
+const { BadRequestError } = require("../utils");
 
 /**
  * Creates an Express middleware that validates the request against a Zod schema.

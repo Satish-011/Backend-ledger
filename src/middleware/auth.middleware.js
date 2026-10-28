@@ -1,6 +1,10 @@
 const userModel = require("../models/user.model");
-const { UnauthorizedError, ForbiddenError } = require("../errors");
-const { getAuthToken, verifyAuthToken } = require("../utils");
+const {
+  UnauthorizedError,
+  ForbiddenError,
+  getAuthToken,
+  verifyAuthToken,
+} = require("../utils");
 
 const authMiddleware = async (req, res, next) => {
   const token = getAuthToken(req);

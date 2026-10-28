@@ -1,5 +1,5 @@
 const logger = require("../config/logger");
-const { AppError } = require("../errors/app.error");
+const { AppError } = require("../utils");
 
 /**
  * Centralized error-handling middleware.

@@ -3,8 +3,9 @@ const { queueRegistrationEmail } = require("../queues/email.queue");
 const {
   ConflictError,
   BadRequestError,
-} = require("../errors");
-const { createAuthToken, setAuthCookie } = require("../utils");
+  createAuthToken,
+  setAuthCookie,
+} = require("../utils");
 
 const registerController = async (req, res, next) => {
   try {
