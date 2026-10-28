@@ -48,7 +48,7 @@ async function createInitialFundsTransaction(req, res) {
       .json({ message: "Forbidden: User is not a system user" });
   }
 
-ion = await transactionModel.startSession();
+  const session = await transactionModel.startSession();
 }
 
 module.exports = {
