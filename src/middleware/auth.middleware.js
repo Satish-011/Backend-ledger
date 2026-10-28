@@ -1,16 +1,16 @@
 const userModel = require("../models/user.model");
-const jwt = require("jsonwebtoken");
 const { UnauthorizedError, ForbiddenError } = require("../errors");
+const { getAuthToken, verifyAuthToken } = require("../utils");
 
 const authMiddleware = async (req, res, next) => {
-  const token = req.cookies.token || req.headers.authorization?.split(" ")[1];
+  const token = getAuthToken(req);
 
   if (!token) {
     return next(new UnauthorizedError("Unauthorized: No token provided", "TOKEN_MISSING"));
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = verifyAuthToken(token);
     const user = await userModel.findById(decoded.id);
 
     if (!user) {
@@ -31,14 +31,14 @@ const authMiddleware = async (req, res, next) => {
 };
 
 const authsystemUserMiddleware = async (req, res, next) => {
-  const token = req.cookies.token || req.headers.authorization?.split(" ")[1];
+  const token = getAuthToken(req);
 
   if (!token) {
     return next(new UnauthorizedError("Unauthorized: No token provided", "TOKEN_MISSING"));
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = verifyAuthToken(token);
     const user = await userModel.findById(decoded.id).select("+systemUser");
 
     if (!user) {

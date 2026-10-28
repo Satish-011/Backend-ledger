@@ -1,19 +1,14 @@
 const User = require("../models/user.model");
-const jwt = require("jsonwebtoken");
 const { queueRegistrationEmail } = require("../queues/email.queue");
 const {
   ConflictError,
   BadRequestError,
-  InternalServerError,
 } = require("../errors");
+const { createAuthToken, setAuthCookie } = require("../utils");
 
 const registerController = async (req, res, next) => {
   try {
     const { email, name, password } = req.body;
-
-    if (!process.env.JWT_SECRET) {
-      throw new InternalServerError("Server configuration error", "CONFIG_ERROR");
-    }
 
     const existingUser = await User.findOne({ email });
 
@@ -23,13 +18,8 @@ const registerController = async (req, res, next) => {
 
     const newUser = await User.create({ email, name, password });
 
-    const token = jwt.sign(
-      { id: newUser._id },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" },
-    );
-
-    res.cookie("token", token);
+    const token = createAuthToken(newUser._id);
+    setAuthCookie(res, token);
 
     await queueRegistrationEmail(newUser.email, newUser.name);
 
@@ -52,10 +42,6 @@ const loginController = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    if (!process.env.JWT_SECRET) {
-      throw new InternalServerError("Server configuration error", "CONFIG_ERROR");
-    }
-
     const user = await User.findOne({ email }).select("+password");
 
     if (!user) {
@@ -68,13 +54,8 @@ const loginController = async (req, res, next) => {
       throw new BadRequestError("Invalid credentials", "INVALID_CREDENTIALS");
     }
 
-    const token = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" },
-    );
-
-    res.cookie("token", token);
+    const token = createAuthToken(user._id);
+    setAuthCookie(res, token);
 
     return res.status(200).json({
       success: true,
