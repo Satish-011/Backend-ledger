@@ -1,36 +1,34 @@
 const accountModel = require("../models/account.model");
 
-const createAccountController = async (req, res) => {
+const createAccountController = async (req, res, next) => {
   try {
-    const userId = req.user._id;
-    const account = await accountModel.create({
-      user: userId,
-    });
+    const account = await accountModel.create({ user: req.user._id });
 
-    res.status(201).json({
+    return res.status(201).json({
       message: "Account created successfully",
-      account: account,
+      account,
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      message: "Error creating account",
-      error: error.message,
-    });
+    next(error);
   }
 };
 
-const getAccountsController = async (req, res) => {
-  const accounts = await accountModel.find({ user: req.user._id });
-  res.status(200).json({
-    message: "Accounts retrieved successfully",
-    accounts: accounts,
-  });
+const getAccountsController = async (req, res, next) => {
+  try {
+    const accounts = await accountModel.find({ user: req.user._id });
+
+    return res.status(200).json({
+      message: "Accounts retrieved successfully",
+      accounts,
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
-const getAccountBalanceController = async (req, res) => {
+const getAccountBalanceController = async (req, res, next) => {
   try {
-    const accountId = req.params.accountId;
+    const { accountId } = req.params;
 
     const account = await accountModel.findOne({
       _id: accountId,
@@ -38,21 +36,17 @@ const getAccountBalanceController = async (req, res) => {
     });
 
     if (!account) {
-      return res.status(404).json({
-        message: "Account not found",
-      });
+      return res.status(404).json({ message: "Account not found" });
     }
 
     const balance = await account.getBalance();
 
     return res.status(200).json({
       message: "Account balance retrieved successfully",
-      balance: balance,
+      balance,
     });
   } catch (error) {
-    return res.status(500).json({
-      message: "Internal server error",
-    });
+    next(error);
   }
 };
 
