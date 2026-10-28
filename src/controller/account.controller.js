@@ -1,10 +1,12 @@
 const accountModel = require("../models/account.model");
+const { NotFoundError } = require("../errors");
 
 const createAccountController = async (req, res, next) => {
   try {
     const account = await accountModel.create({ user: req.user._id });
 
     return res.status(201).json({
+      success: true,
       message: "Account created successfully",
       account,
     });
@@ -18,6 +20,7 @@ const getAccountsController = async (req, res, next) => {
     const accounts = await accountModel.find({ user: req.user._id });
 
     return res.status(200).json({
+      success: true,
       message: "Accounts retrieved successfully",
       accounts,
     });
@@ -36,12 +39,13 @@ const getAccountBalanceController = async (req, res, next) => {
     });
 
     if (!account) {
-      return res.status(404).json({ message: "Account not found" });
+      throw new NotFoundError("Account not found", "ACCOUNT_NOT_FOUND");
     }
 
     const balance = await account.getBalance();
 
     return res.status(200).json({
+      success: true,
       message: "Account balance retrieved successfully",
       balance,
     });

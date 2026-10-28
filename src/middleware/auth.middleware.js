@@ -1,11 +1,12 @@
 const userModel = require("../models/user.model");
 const jwt = require("jsonwebtoken");
+const { UnauthorizedError, ForbiddenError } = require("../errors");
 
 const authMiddleware = async (req, res, next) => {
   const token = req.cookies.token || req.headers.authorization?.split(" ")[1];
 
   if (!token) {
-    return res.status(401).json({ message: "Unauthorized: No token provided" });
+    return next(new UnauthorizedError("Unauthorized: No token provided", "TOKEN_MISSING"));
   }
 
   try {
@@ -13,20 +14,19 @@ const authMiddleware = async (req, res, next) => {
     const user = await userModel.findById(decoded.id);
 
     if (!user) {
-      return res.status(401).json({ message: "Unauthorized: User not found" });
+      return next(new UnauthorizedError("Unauthorized: User not found", "USER_NOT_FOUND"));
     }
 
     req.user = user;
     return next();
   } catch (error) {
     if (error.name === "TokenExpiredError") {
-      return res.status(401).json({ message: "Unauthorized: Token has expired" });
+      return next(new UnauthorizedError("Unauthorized: Token has expired", "TOKEN_EXPIRED"));
     }
     if (error.name === "JsonWebTokenError") {
-      return res.status(401).json({ message: "Unauthorized: Invalid token" });
+      return next(new UnauthorizedError("Unauthorized: Invalid token", "TOKEN_INVALID"));
     }
-    console.error(error);
-    return res.status(500).json({ message: "Internal server error" });
+    return next(error);
   }
 };
 
@@ -34,7 +34,7 @@ const authsystemUserMiddleware = async (req, res, next) => {
   const token = req.cookies.token || req.headers.authorization?.split(" ")[1];
 
   if (!token) {
-    return res.status(401).json({ message: "Unauthorized: No token provided" });
+    return next(new UnauthorizedError("Unauthorized: No token provided", "TOKEN_MISSING"));
   }
 
   try {
@@ -42,26 +42,25 @@ const authsystemUserMiddleware = async (req, res, next) => {
     const user = await userModel.findById(decoded.id).select("+systemUser");
 
     if (!user) {
-      return res.status(401).json({ message: "Unauthorized: User not found" });
+      return next(new UnauthorizedError("Unauthorized: User not found", "USER_NOT_FOUND"));
     }
 
     if (!user.systemUser) {
-      return res
-        .status(403)
-        .json({ message: "Forbidden: User is not a system user" });
+      return next(
+        new ForbiddenError("Forbidden: User is not a system user", "FORBIDDEN_NOT_SYSTEM_USER"),
+      );
     }
 
     req.user = user;
     return next();
   } catch (error) {
     if (error.name === "TokenExpiredError") {
-      return res.status(401).json({ message: "Unauthorized: Token has expired" });
+      return next(new UnauthorizedError("Unauthorized: Token has expired", "TOKEN_EXPIRED"));
     }
     if (error.name === "JsonWebTokenError") {
-      return res.status(401).json({ message: "Unauthorized: Invalid token" });
+      return next(new UnauthorizedError("Unauthorized: Invalid token", "TOKEN_INVALID"));
     }
-    console.error(error);
-    return res.status(500).json({ message: "Internal server error" });
+    return next(error);
   }
 };
 

@@ -1,19 +1,24 @@
 const User = require("../models/user.model");
 const jwt = require("jsonwebtoken");
-const sendEmail = require("../services/email.service");
+const { queueRegistrationEmail } = require("../queues/email.queue");
+const {
+  ConflictError,
+  BadRequestError,
+  InternalServerError,
+} = require("../errors");
 
 const registerController = async (req, res, next) => {
   try {
     const { email, name, password } = req.body;
 
     if (!process.env.JWT_SECRET) {
-      return res.status(500).json({ message: "Server configuration error" });
+      throw new InternalServerError("Server configuration error", "CONFIG_ERROR");
     }
 
     const existingUser = await User.findOne({ email });
 
     if (existingUser) {
-      return res.status(400).json({ message: "User already exists" });
+      throw new ConflictError("User already exists", "USER_ALREADY_EXISTS");
     }
 
     const newUser = await User.create({ email, name, password });
@@ -26,9 +31,10 @@ const registerController = async (req, res, next) => {
 
     res.cookie("token", token);
 
-    await sendEmail.sendRegistrationEmail(newUser.email, newUser.name);
+    await queueRegistrationEmail(newUser.email, newUser.name);
 
     return res.status(201).json({
+      success: true,
       message: "User registered successfully",
       user: {
         id: newUser._id,
@@ -47,19 +53,19 @@ const loginController = async (req, res, next) => {
     const { email, password } = req.body;
 
     if (!process.env.JWT_SECRET) {
-      return res.status(500).json({ message: "Server configuration error" });
+      throw new InternalServerError("Server configuration error", "CONFIG_ERROR");
     }
 
     const user = await User.findOne({ email }).select("+password");
 
     if (!user) {
-      return res.status(400).json({ message: "Invalid credentials" });
+      throw new BadRequestError("Invalid credentials", "INVALID_CREDENTIALS");
     }
 
     const isMatch = await user.comparePassword(password);
 
     if (!isMatch) {
-      return res.status(400).json({ message: "Invalid credentials" });
+      throw new BadRequestError("Invalid credentials", "INVALID_CREDENTIALS");
     }
 
     const token = jwt.sign(
@@ -71,6 +77,7 @@ const loginController = async (req, res, next) => {
     res.cookie("token", token);
 
     return res.status(200).json({
+      success: true,
       message: "User logged in successfully",
       user: {
         id: user._id,

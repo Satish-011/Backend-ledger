@@ -2,7 +2,8 @@ const mongoose = require("mongoose");
 const transactionModel = require("../models/transaction.model");
 const ledgerModel = require("../models/ledger.model");
 const accountModel = require("../models/account.model");
-const emailService = require("../services/email.service");
+const { queueTransactionEmail } = require("../queues/email.queue");
+const { NotFoundError, ForbiddenError } = require("../errors");
 
 /**
  * Create a new transaction
@@ -38,7 +39,7 @@ async function createInitialFundsTransaction(req, res, next) {
     const toUserAccount = await accountModel.findById(toAccount);
 
     if (!toUserAccount) {
-      return res.status(404).json({ message: "Account not found" });
+      throw new NotFoundError("Account not found", "ACCOUNT_NOT_FOUND");
     }
 
     const fromUserAccount = await accountModel.findOne({
@@ -47,9 +48,10 @@ async function createInitialFundsTransaction(req, res, next) {
     });
 
     if (!fromUserAccount) {
-      return res
-        .status(403)
-        .json({ message: "Forbidden: User is not a system user" });
+      throw new ForbiddenError(
+        "Forbidden: User is not a system user",
+        "FORBIDDEN_NOT_SYSTEM_USER",
+      );
     }
 
     const transaction = new transactionModel({
@@ -91,7 +93,7 @@ async function createInitialFundsTransaction(req, res, next) {
 
     await session.commitTransaction();
 
-    await emailService.sendTransactionEmail(
+    await queueTransactionEmail(
       req.user.email,
       req.user.name,
       amount,
@@ -99,6 +101,7 @@ async function createInitialFundsTransaction(req, res, next) {
     );
 
     return res.status(201).json({
+      success: true,
       message: "Transaction completed successfully",
       transaction,
     });
