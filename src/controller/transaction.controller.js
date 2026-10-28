@@ -48,7 +48,51 @@ async function createInitialFundsTransaction(req, res) {
       .json({ message: "Forbidden: User is not a system user" });
   }
 
-  const session = await transactionModel.startSession();
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  const transaction = new transactionModel({
+    fromAccount: fromUserAccount._id,
+    toAccount: toUserACcount._id,
+    amount: amount,
+    idempotencyKey: idempotencyKey,
+    status: "pending",
+  });
+
+  const debitLedgerEntry = await ledgerModel.create(
+    [
+      {
+        account: fromUserAccount._id,
+        amount: amount,
+        type: "debit",
+        transaction: transaction._id,
+      },
+    ],
+    { session },
+  );
+
+  const creditLedgerEntry = await ledgerModel.create(
+    [
+      {
+        account: toUserACcount._id,
+        amount: amount,
+        type: "credit",
+        transaction: transaction._id,
+      },
+    ],
+    { session },
+  );
+
+  transaction.status = "completed";
+  await transaction.save({ session });
+
+  await session.commitTransaction();
+  session.endSession();
+
+  return res.status(201).json({
+    message: "Transaction completed successfully",
+    transaction: transaction,
+  });
 }
 
 module.exports = {
