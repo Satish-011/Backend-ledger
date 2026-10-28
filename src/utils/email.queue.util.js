@@ -1,14 +1,22 @@
 const { Queue } = require("bullmq");
-const redisConnection = require("../config/redis");
 
-const emailQueue = new Queue("email", { connection: redisConnection });
+let emailQueue;
+
+const getEmailQueue = () => {
+  if (!emailQueue) {
+    const redisConnection = require("../config/redis");
+    emailQueue = new Queue("email", { connection: redisConnection });
+  }
+
+  return emailQueue;
+};
 
 async function queueRegistrationEmail(userEmail, name) {
-  await emailQueue.add("registration", { userEmail, name });
+  await getEmailQueue().add("registration", { userEmail, name });
 }
 
 async function queueTransactionEmail(userEmail, name, amount, toAccount) {
-  await emailQueue.add("transaction-success", {
+  await getEmailQueue().add("transaction-success", {
     userEmail,
     name,
     amount,
@@ -17,7 +25,7 @@ async function queueTransactionEmail(userEmail, name, amount, toAccount) {
 }
 
 async function queueTransactionFailedEmail(userEmail, name, amount, toAccount) {
-  await emailQueue.add("transaction-failed", {
+  await getEmailQueue().add("transaction-failed", {
     userEmail,
     name,
     amount,
@@ -26,7 +34,6 @@ async function queueTransactionFailedEmail(userEmail, name, amount, toAccount) {
 }
 
 module.exports = {
-  emailQueue,
   queueRegistrationEmail,
   queueTransactionEmail,
   queueTransactionFailedEmail,

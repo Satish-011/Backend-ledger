@@ -2,10 +2,10 @@ const mongoose = require("mongoose");
 const transactionModel = require("../models/transaction.model");
 const ledgerModel = require("../models/ledger.model");
 const accountModel = require("../models/account.model");
+const { queueTransactionEmail } = require("../utils/email.queue.util");
 const {
   NotFoundError,
   ForbiddenError,
-  queueTransactionEmail,
 } = require("../utils");
 
 /**
