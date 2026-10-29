@@ -1,24 +1,15 @@
-const dotenv = require("dotenv");
-dotenv.config();
+// server.js
+const express = require('express');
+const app = express();
 
-const app = require("./src/app");
-const connectDB = require("./src/config/db");
-const logger = require("./src/config/logger");
+const PORT = 3000;
 
-// Start the email worker (processes queued emails in the background)
-require("./src/utils/email.worker.util");
+// Ek simple test route check karne ke liye ki server chal raha hai ya nahi
+app.get('/', (req, res) => {
+    res.send('Bank API is running!');
+});
 
-const port = process.env.PORT || 3000;
-
-const startServer = async () => {
-  try {
-    await connectDB();
-    app.listen(port, () => {
-      logger.info(`Server is running on port ${port}`);
-    });
-  } catch (error) {
-    logger.error("Error starting the server:", error);
-  }
-};
-
-startServer();
+// Server ko port 3000 par start karna
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});

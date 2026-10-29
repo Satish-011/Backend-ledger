@@ -4,25 +4,20 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon server.js",
-    "start": "node server.js"
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Satish-011/Backend-ledger.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Satish-011/Backend-ledger/issues"
+  },
+  "homepage": "https://github.com/Satish-011/Backend-ledger#readme",
   "dependencies": {
-    "bcrypt": "^6.0.0",
-    "bullmq": "^6.5.1",
-    "cookie-parser": "^1.4.7",
-    "dotenv": "^18.0.9",
-    "express": "^5.3.0",
-    "ioredis": "^6.0.0",
-    "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.11.4",
-    "nodemailer": "^10.2.1",
-    "nodemon": "^3.1.14",
-    "winston": "^3.19.0",
-    "zod": "^4.6.7"
+    "express": "^5.3.0"
   }
 }
