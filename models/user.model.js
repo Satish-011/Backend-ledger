@@ -1,4 +1,4 @@
-// models/User.js
+// models/user.model.js
 const mongoose = require('mongoose');
 
 // 1. Schema define karna (Data kaisa dikhega)
