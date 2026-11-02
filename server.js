@@ -3,10 +3,10 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const app = require('./app'); // app.js se app import kiya
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // MongoDB Connection
-mongoose.connect(process.env.MONGO_URI)
+mongoose.connect(process.env.MONGO_URL)
     .then(() => {
         console.log('MongoDB Database connected successfully!');
     })
