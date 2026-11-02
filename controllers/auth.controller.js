@@ -3,15 +3,19 @@ const User = require('../models/user.model');
 const Account = require('../models/account.model');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const emailQueue = require('../utils/emailQueue'); // NAYA: BullMQ Queue
-const redis = require('../utils/redisClient');     // NAYA: Redis Client
+const emailQueue = require('../utils/emailQueue');
+const redis = require('../utils/redisClient');
+const { BadRequestError, UnauthorizedError, ConflictError, InternalServerError } = require('../utils/error');
 
-// ==========================================
-// 1. REGISTER (Background Email)
-// ==========================================
-const register = async (req, res) => {
+const register = async (req, res, next) => {
     try {
         const { name, email, password } = req.body;
+
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+            throw new ConflictError("Email already in use!", "EMAIL_EXISTS");
+        }
+
         const newUser = await User.create({ name, email, password });
 
         await Account.create({
@@ -27,7 +31,6 @@ const register = async (req, res) => {
             </div>
         `;
 
-        // NAYA: Email ko background queue mein daal diya. API turant response degi!
         await emailQueue.add('send-welcome-email', {
             email: newUser.email,
             subject: 'Account Created Successfully - Welcome to Our Bank!',
@@ -35,50 +38,52 @@ const register = async (req, res) => {
         });
 
         res.status(201).json({ 
+            success: true,
             message: "User account created! Welcome email queued in background.", 
             user: { _id: newUser._id, name: newUser.name, email: newUser.email } 
         });
     } catch (error) {
-        res.status(400).json({ message: "Failed to create account", error: error.message });
+        next(error); // Error seedha errorHandler ke paas chali jayegi
     }
 };
 
-// ==========================================
-// 2. LOGIN USER (Same as before)
-// ==========================================
-const login = async (req, res) => {
+const login = async (req, res, next) => {
     try {
         const { email, password } = req.body;
-        const user = await User.findOne({ email: email });
-        if (!user) return res.status(400).json({ message: "User not found!" });
+        
+        const user = await User.findOne({ email });
+        if (!user) throw new BadRequestError("User not found!", "USER_NOT_FOUND");
 
         const isPasswordMatch = await bcrypt.compare(password, user.password);
-        if (!isPasswordMatch) return res.status(400).json({ message: "Galat password!" });
+        if (!isPasswordMatch) throw new UnauthorizedError("Galat password!", "INVALID_CREDENTIALS");
 
         const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
+        
         res.cookie('jwt', token, {
             expires: new Date(Date.now() + 24 * 60 * 60 * 1000), 
             httpOnly: true, 
             secure: process.env.NODE_ENV === 'production' 
         });
 
-        res.status(200).json({ message: "Login successful!" });
+        res.status(200).json({ success: true, message: "Login successful!" });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        next(error);
     }
 };
 
-// ==========================================
-// 3. LOGOUT (Redis Caching for Blacklist)
-// ==========================================
-const logout = async (req, res) => {
+const logout = async (req, res, next) => {
     try {
         const token = req.cookies.jwt;
 
         if (token) {
-            // NAYA: Token ko Redis mein save karna, 86400 seconds (1 day) ki expiry ke sath
-            // Syntax: setex(key, seconds, value)
-            await redis.setex(`blacklist_token:${token}`, 86400, 'blocked');
+            const decoded = jwt.decode(token);
+            if (decoded && decoded.exp) {
+                const currentTime = Math.floor(Date.now() / 1000);
+                const timeLeft = decoded.exp - currentTime;
+                if (timeLeft > 0) {
+                    await redis.setex(`blacklist_token:${token}`, timeLeft, 'blocked');
+                }
+            }
         }
 
         res.cookie('jwt', '', {
@@ -86,9 +91,9 @@ const logout = async (req, res) => {
             expires: new Date(0)
         });
 
-        res.status(200).json({ message: "Logout successful! Token cached in Redis Blacklist." });
+        res.status(200).json({ success: true, message: "Logout successful!" });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        next(new InternalServerError(error.message));
     }
 };
 
