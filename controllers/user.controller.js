@@ -1,19 +1,23 @@
 // controllers/user.controller.js
 const User = require('../models/user.model');
+const Account = require('../models/account.model'); // Account model import kiya
 
 const getProfile = async (req, res) => {
     try {
-        // req.userId hume us Bouncer (middleware) ne diya hai!
-        // .select('-password') ka matlab hai ki user data laao par password mat bhejna
+        // 1. User ki details lana
         const user = await User.findById(req.userId).select('-password');
-
         if (!user) {
             return res.status(404).json({ message: "User not found" });
         }
 
+        // 2. User ka Bank Account (balance) lana
+        const account = await Account.findOne({ userId: req.userId });
+
+        // 3. Dono details sath mein bhej dena
         res.status(200).json({
             message: "Profile data fetched successfully",
-            user: user
+            user: user,
+            account: account // Balance yahan dikhega!
         });
 
     } catch (error) {
