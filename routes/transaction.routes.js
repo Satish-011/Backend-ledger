@@ -3,11 +3,12 @@ const express = require('express');
 const router = express.Router();
 const transactionController = require('../controllers/transaction.controller');
 const protect = require('../middlewares/auth.middleware');
+const { generalLimiter } = require('../middlewares/rateLimiter'); // NAYA: Import kiya
 
-// Sabhi routes logged-in user ke liye protect kiye gaye hain
-router.post('/transfer', protect, transactionController.transferMoney);
-router.post('/deposit', protect, transactionController.depositMoney);
-router.post('/withdraw', protect, transactionController.withdrawMoney); // NAYA ROUTE
-router.get('/history', protect, transactionController.getHistory);
+// Sabhi routes par rate limit aur auth protection lagayenge
+router.post('/transfer', generalLimiter, protect, transactionController.transferMoney);
+router.post('/deposit', generalLimiter, protect, transactionController.depositMoney);
+router.post('/withdraw', generalLimiter, protect, transactionController.withdrawMoney);
+router.get('/history', generalLimiter, protect, transactionController.getHistory);
 
 module.exports = router;
