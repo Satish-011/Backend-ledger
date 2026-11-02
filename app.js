@@ -7,9 +7,11 @@ app.use(express.json());
 
 // Routes ko import karna
 const authRoutes = require("./routes/auth.routes");
+const userRoutes = require('./routes/user.routes');
 
 // API ka base URL set karna
 app.use("/api/auth", authRoutes);
+app.use('/api/users', userRoutes);
 
 // Basic test route
 app.get("/", (req, res) => {
