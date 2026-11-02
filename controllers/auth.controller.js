@@ -27,17 +27,36 @@ const register = async (req, res) => {
 };
 
 // Login function waise ka waisa hi rahega
+// controllers/auth.controller.js (sirf login function update hoga)
+
 const login = async (req, res) => {
     try {
         const { email, password } = req.body;
+        
         const user = await User.findOne({ email: email });
         if (!user) return res.status(400).json({ message: "User not found!" });
 
         const isPasswordMatch = await bcrypt.compare(password, user.password);
         if (!isPasswordMatch) return res.status(400).json({ message: "Galat password!" });
 
+        // Token banaya (1 din ke liye)
         const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
-        res.status(200).json({ message: "Login successful!", token: token });
+
+        // NAYA: Cookie ke options set karna
+        const cookieOptions = {
+            expires: new Date(Date.now() + 24 * 60 * 60 * 1000), // 1 din baad expire
+            httpOnly: true, // JS ise read nahi kar payega (XSS Protection)
+            secure: process.env.NODE_ENV === 'production' // Production me sirf HTTPS pe chalega
+        };
+
+        // NAYA: Response mein cookie set karna
+        res.cookie('jwt', token, cookieOptions);
+
+        // NAYA: JSON mein ab token nahi bhejenge
+        res.status(200).json({ 
+            message: "Login successful!" 
+        });
+
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
