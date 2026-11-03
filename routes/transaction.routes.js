@@ -7,4 +7,6 @@ const protect = require('../middlewares/auth.middleware');
 // Is API ko sirf logged-in user hi chala sakta hai (protect middleware)
 router.post('/transfer', protect, transactionController.transferMoney);
 
+router.get('/history', protect, transactionController.getHistory);
+
 module.exports = router;
