@@ -1,13 +1,18 @@
 // middlewares/auth.middleware.js
 const jwt = require('jsonwebtoken');
+const BlacklistedToken = require('../models/blacklistedToken.model'); // NAYA: Model import kiya
 
-const protect = (req, res, next) => {
+const protect = async (req, res, next) => {
     try {
-        // NAYA: Token ab req.cookies se nikalenge (req.headers se nahi)
         const token = req.cookies.jwt;
-
         if (!token) {
             return res.status(401).json({ message: "Access denied. Ticket (cookie) nahi mila!" });
+        }
+
+        // NAYA SECURITY CHECK: Kya ye token Blocked List mein hai?
+        const isBlacklisted = await BlacklistedToken.findOne({ token: token });
+        if (isBlacklisted) {
+            return res.status(401).json({ message: "Ye session expire (logout) ho chuka hai. Wapas login karein." });
         }
 
         // Token verify karna
@@ -15,7 +20,6 @@ const protect = (req, res, next) => {
         req.userId = decoded.userId;
 
         next();
-        
     } catch (error) {
         return res.status(401).json({ message: "Invalid ya expired token!" });
     }
