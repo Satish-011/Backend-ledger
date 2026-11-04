@@ -31,7 +31,7 @@ app.get('/', (req, res) => {
 });
 
 // 5. 404 Fallback Route (Agar user aisi API call kare jo exist nahi karti) (NAYA ADD KIYA)
-app.all('*', (req, res, next) => {
+app.use((req, res, next) => {
     next(new NotFoundError(`Route ${req.originalUrl} not found!`, "ROUTE_NOT_FOUND"));
 });
 
