@@ -4,9 +4,9 @@ const router = express.Router();
 const transactionController = require('../controllers/transaction.controller');
 const protect = require('../middlewares/auth.middleware');
 
-// Is API ko sirf logged-in user hi chala sakta hai (protect middleware)
+// Sabhi routes logged-in user ke liye protect kiye gaye hain
 router.post('/transfer', protect, transactionController.transferMoney);
-
+router.post('/deposit', protect, transactionController.depositMoney);
 router.get('/history', protect, transactionController.getHistory);
 
 module.exports = router;

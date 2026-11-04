@@ -2,20 +2,23 @@
 const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema({
+    transactionType: { 
+        type: String, 
+        enum: ['TRANSFER', 'DEPOSIT', 'WITHDRAWAL'], 
+        default: 'TRANSFER' 
+    },
     senderId: { 
         type: mongoose.Schema.Types.ObjectId, 
-        ref: 'User', 
-        required: true 
+        ref: 'User' 
     },
     receiverId: { 
         type: mongoose.Schema.Types.ObjectId, 
-        ref: 'User', 
-        required: true 
+        ref: 'User' 
     },
     amount: { 
         type: Number, 
         required: true, 
-        min: 1 // Kam se kam 1 Rs bhejna hoga
+        min: 1 
     },
     status: { 
         type: String, 
