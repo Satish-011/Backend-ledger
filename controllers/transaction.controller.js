@@ -4,6 +4,7 @@ const User = require('../models/user.model');
 const Account = require('../models/account.model');
 const Transaction = require('../models/transaction.model');
 const Ledger = require('../models/ledger.model');
+const redis = require('../utils/redisClient'); // NAYA: Redis Import kiya
 
 // ==========================================
 // 1. TRANSFER MONEY
@@ -43,30 +44,20 @@ const transferMoney = async (req, res) => {
         });
         await transaction.save({ session });
 
-        const debitEntry = new Ledger({
-            transactionId: transaction._id,
-            accountId: senderAccount._id,
-            type: 'DEBIT', 
-            amount: amount
-        });
+        const debitEntry = new Ledger({ transactionId: transaction._id, accountId: senderAccount._id, type: 'DEBIT', amount: amount });
+        const creditEntry = new Ledger({ transactionId: transaction._id, accountId: receiverAccount._id, type: 'CREDIT', amount: amount });
+        
         await debitEntry.save({ session });
-
-        const creditEntry = new Ledger({
-            transactionId: transaction._id,
-            accountId: receiverAccount._id,
-            type: 'CREDIT', 
-            amount: amount
-        });
         await creditEntry.save({ session });
 
         await session.commitTransaction();
         session.endSession();
 
-        res.status(200).json({
-            message: `Success! Rs ${amount} transferred to ${receiver.name}`,
-            transactionId: transaction._id
-        });
+        // CACHE INVALIDATION: Sender aur Receiver dono ki history badal gayi, toh dono ka cache delete kardo
+        await redis.del(`history:${senderId}`);
+        await redis.del(`history:${receiver._id}`);
 
+        res.status(200).json({ message: `Success! Rs ${amount} transferred to ${receiver.name}`, transactionId: transaction._id });
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
@@ -93,31 +84,19 @@ const depositMoney = async (req, res) => {
         account.balance += amount;
         await account.save({ session });
 
-        const transaction = new Transaction({
-            transactionType: 'DEPOSIT',
-            receiverId: userId,
-            amount: amount,
-            status: 'SUCCESS'
-        });
+        const transaction = new Transaction({ transactionType: 'DEPOSIT', receiverId: userId, amount: amount, status: 'SUCCESS' });
         await transaction.save({ session });
 
-        const ledgerEntry = new Ledger({
-            transactionId: transaction._id,
-            accountId: account._id,
-            type: 'CREDIT',
-            amount: amount
-        });
+        const ledgerEntry = new Ledger({ transactionId: transaction._id, accountId: account._id, type: 'CREDIT', amount: amount });
         await ledgerEntry.save({ session });
 
         await session.commitTransaction();
         session.endSession();
 
-        res.status(200).json({
-            message: `Success! Rs ${amount} deposited to your account.`,
-            newBalance: account.balance,
-            transactionId: transaction._id
-        });
+        // CACHE INVALIDATION: Balance update hua, purana cache delete karo
+        await redis.del(`history:${userId}`);
 
+        res.status(200).json({ message: `Success! Rs ${amount} deposited.`, newBalance: account.balance, transactionId: transaction._id });
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
@@ -140,37 +119,24 @@ const withdrawMoney = async (req, res) => {
 
         const account = await Account.findOne({ userId: userId }).session(session);
         if (!account) throw new Error("Account nahi mila!");
-
         if (account.balance < amount) throw new Error("Account mein sufficient balance nahi hai!");
 
         account.balance -= amount;
         await account.save({ session });
 
-        const transaction = new Transaction({
-            transactionType: 'WITHDRAWAL',
-            senderId: userId,
-            amount: amount,
-            status: 'SUCCESS'
-        });
+        const transaction = new Transaction({ transactionType: 'WITHDRAWAL', senderId: userId, amount: amount, status: 'SUCCESS' });
         await transaction.save({ session });
 
-        const ledgerEntry = new Ledger({
-            transactionId: transaction._id,
-            accountId: account._id,
-            type: 'DEBIT',
-            amount: amount
-        });
+        const ledgerEntry = new Ledger({ transactionId: transaction._id, accountId: account._id, type: 'DEBIT', amount: amount });
         await ledgerEntry.save({ session });
 
         await session.commitTransaction();
         session.endSession();
 
-        res.status(200).json({
-            message: `Success! Rs ${amount} withdrawn from your account.`,
-            newBalance: account.balance,
-            transactionId: transaction._id
-        });
+        // CACHE INVALIDATION: Balance kam hua, purana cache delete karo
+        await redis.del(`history:${userId}`);
 
+        res.status(200).json({ message: `Success! Rs ${amount} withdrawn.`, newBalance: account.balance, transactionId: transaction._id });
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
@@ -179,24 +145,31 @@ const withdrawMoney = async (req, res) => {
 };
 
 // ==========================================
-// 4. GET TRANSACTION HISTORY (WITH PAGINATION)
+// 4. GET TRANSACTION HISTORY (Redis Caching)
 // ==========================================
 const getHistory = async (req, res) => {
     try {
-        // NAYA: URL se page aur limit nikalna (Agar user na bheje toh default page=1, limit=10)
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
-        const skip = (page - 1) * limit; // Data skip karne ka formula
+        const skip = (page - 1) * limit;
 
-        // Query ki shart: User sender ho ya receiver ho
-        const queryCondition = {
-            $or: [{ senderId: req.userId }, { receiverId: req.userId }]
-        };
+        // 1. Cache Keys (User ki history ek hash map me save hogi, field usko page number hoga)
+        const hashKey = `history:${req.userId}`;
+        const fieldKey = `page:${page}:limit:${limit}`;
 
-        // NAYA: Total kitne transactions hain wo count karna (taaki frontend ko pata chale aur kitne pages hain)
+        // 2. CHECK REDIS (Cache Hit ya Miss)
+        const cachedHistory = await redis.hget(hashKey, fieldKey);
+        
+        if (cachedHistory) {
+            console.log(`[Cache Hit] Redis se history aayi user: ${req.userId} ke liye`);
+            return res.status(200).json(JSON.parse(cachedHistory)); // Redis hamesha string deta hai, usko parse karna padta hai
+        }
+
+        console.log(`[Cache Miss] MongoDB se history nikal raha hu user: ${req.userId} ke liye`);
+
+        // 3. Database Query (Kyunki cache mein nahi tha)
+        const queryCondition = { $or: [{ senderId: req.userId }, { receiverId: req.userId }] };
         const totalTransactions = await Transaction.countDocuments(queryCondition);
-
-        // Database se data lana (skip aur limit lagakar)
         const transactions = await Transaction.find(queryCondition)
             .populate('senderId', 'name email')
             .populate('receiverId', 'name email')
@@ -204,8 +177,7 @@ const getHistory = async (req, res) => {
             .skip(skip)
             .limit(limit);
 
-        // NAYA: Clean aur professional response jisme metadata bhi ho
-        res.status(200).json({
+        const responseData = {
             message: "Transaction history fetched successfully",
             pagination: {
                 totalRecords: totalTransactions,
@@ -215,8 +187,13 @@ const getHistory = async (req, res) => {
                 hasPrevPage: page > 1
             },
             transactions: transactions
-        });
+        };
 
+        // 4. SAVE TO REDIS
+        await redis.hset(hashKey, fieldKey, JSON.stringify(responseData));
+        await redis.expire(hashKey, 300); // 5 minute (300 sec) ki general expiry tak ki RAM free rahe
+
+        res.status(200).json(responseData);
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
     }
