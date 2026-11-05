@@ -1,20 +1,24 @@
 // server.js
 require('dotenv').config();
 const mongoose = require('mongoose');
-const app = require('./app'); // app.js se app import kiya
+const app = require('./app'); // app.js se app import kiya[cite: 4]
+const logger = require('./utils/logger'); // NAYA: Winston logger import kiya
 
 const PORT = process.env.PORT || 3000;
 
-// MongoDB Connection
+// MongoDB Connection[cite: 4]
 mongoose.connect(process.env.MONGO_URL)
     .then(() => {
-        console.log('MongoDB Database connected successfully!');
+        // NAYA: console.log ki jagah logger use kiya
+        logger.info('MongoDB Database connected successfully!'); 
     })
     .catch((error) => {
-        console.log('MongoDB connection error:', error);
+        // NAYA: console.log ki jagah logger use kiya
+        logger.error('MongoDB connection error:', error); 
     });
 
-// Server Start
+// Server Start[cite: 4]
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    // NAYA: console.log ki jagah logger use kiya
+    logger.info(`Server is running on port ${PORT}`); 
 });
