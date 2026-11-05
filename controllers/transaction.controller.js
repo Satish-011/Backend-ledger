@@ -16,25 +16,17 @@ const transferMoney = async (req, res) => {
         const { receiverEmail, amount } = req.body;
         const senderId = req.userId;
 
-        if (amount <= 0) {
-            throw new Error("Amount 0 se zyada hona chahiye!");
-        }
+        if (amount <= 0) throw new Error("Amount 0 se zyada hona chahiye!");
 
         const receiver = await User.findOne({ email: receiverEmail }).session(session);
-        if (!receiver) {
-            throw new Error("Jisko paise bhej rahe hain, wo email nahi mila.");
-        }
+        if (!receiver) throw new Error("Jisko paise bhej rahe hain, wo email nahi mila.");
 
-        if (senderId === receiver._id.toString()) {
-            throw new Error("Aap khud ko paise nahi bhej sakte!");
-        }
+        if (senderId === receiver._id.toString()) throw new Error("Aap khud ko paise nahi bhej sakte!");
 
         const senderAccount = await Account.findOne({ userId: senderId }).session(session);
         const receiverAccount = await Account.findOne({ userId: receiver._id }).session(session);
 
-        if (senderAccount.balance < amount) {
-            throw new Error("Aapke account mein balance kam hai!");
-        }
+        if (senderAccount.balance < amount) throw new Error("Aapke account mein balance kam hai!");
 
         senderAccount.balance -= amount;
         receiverAccount.balance += amount;
@@ -134,7 +126,62 @@ const depositMoney = async (req, res) => {
 };
 
 // ==========================================
-// 3. GET TRANSACTION HISTORY
+// 3. WITHDRAW MONEY (NAYA)
+// ==========================================
+const withdrawMoney = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+        const { amount } = req.body;
+        const userId = req.userId;
+
+        if (amount <= 0) throw new Error("Amount 0 se zyada hona chahiye!");
+
+        const account = await Account.findOne({ userId: userId }).session(session);
+        if (!account) throw new Error("Account nahi mila!");
+
+        if (account.balance < amount) throw new Error("Account mein sufficient balance nahi hai!");
+
+        account.balance -= amount;
+        await account.save({ session });
+
+        // Withdrawal mein user se paise jaa rahe hain, isliye senderId mein userId daalenge
+        const transaction = new Transaction({
+            transactionType: 'WITHDRAWAL',
+            senderId: userId,
+            amount: amount,
+            status: 'SUCCESS'
+        });
+        await transaction.save({ session });
+
+        // Paise nikale gaye hain, isliye DEBIT entry
+        const ledgerEntry = new Ledger({
+            transactionId: transaction._id,
+            accountId: account._id,
+            type: 'DEBIT',
+            amount: amount
+        });
+        await ledgerEntry.save({ session });
+
+        await session.commitTransaction();
+        session.endSession();
+
+        res.status(200).json({
+            message: `Success! Rs ${amount} withdrawn from your account.`,
+            newBalance: account.balance,
+            transactionId: transaction._id
+        });
+
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        res.status(400).json({ message: "Withdrawal failed", error: error.message });
+    }
+};
+
+// ==========================================
+// 4. GET TRANSACTION HISTORY
 // ==========================================
 const getHistory = async (req, res) => {
     try {
@@ -156,4 +203,4 @@ const getHistory = async (req, res) => {
     }
 };
 
-module.exports = { transferMoney, depositMoney, getHistory };
+module.exports = { transferMoney, depositMoney, withdrawMoney, getHistory };
