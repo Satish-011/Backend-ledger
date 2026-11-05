@@ -126,7 +126,7 @@ const depositMoney = async (req, res) => {
 };
 
 // ==========================================
-// 3. WITHDRAW MONEY (NAYA)
+// 3. WITHDRAW MONEY
 // ==========================================
 const withdrawMoney = async (req, res) => {
     const session = await mongoose.startSession();
@@ -146,7 +146,6 @@ const withdrawMoney = async (req, res) => {
         account.balance -= amount;
         await account.save({ session });
 
-        // Withdrawal mein user se paise jaa rahe hain, isliye senderId mein userId daalenge
         const transaction = new Transaction({
             transactionType: 'WITHDRAWAL',
             senderId: userId,
@@ -155,7 +154,6 @@ const withdrawMoney = async (req, res) => {
         });
         await transaction.save({ session });
 
-        // Paise nikale gaye hain, isliye DEBIT entry
         const ledgerEntry = new Ledger({
             transactionId: transaction._id,
             accountId: account._id,
@@ -181,20 +179,41 @@ const withdrawMoney = async (req, res) => {
 };
 
 // ==========================================
-// 4. GET TRANSACTION HISTORY
+// 4. GET TRANSACTION HISTORY (WITH PAGINATION)
 // ==========================================
 const getHistory = async (req, res) => {
     try {
-        const transactions = await Transaction.find({
-            $or: [{ senderId: req.userId }, { receiverId: req.userId }]
-        })
-        .populate('senderId', 'name email')
-        .populate('receiverId', 'name email')
-        .sort({ createdAt: -1 });
+        // NAYA: URL se page aur limit nikalna (Agar user na bheje toh default page=1, limit=10)
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit; // Data skip karne ka formula
 
+        // Query ki shart: User sender ho ya receiver ho
+        const queryCondition = {
+            $or: [{ senderId: req.userId }, { receiverId: req.userId }]
+        };
+
+        // NAYA: Total kitne transactions hain wo count karna (taaki frontend ko pata chale aur kitne pages hain)
+        const totalTransactions = await Transaction.countDocuments(queryCondition);
+
+        // Database se data lana (skip aur limit lagakar)
+        const transactions = await Transaction.find(queryCondition)
+            .populate('senderId', 'name email')
+            .populate('receiverId', 'name email')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
+
+        // NAYA: Clean aur professional response jisme metadata bhi ho
         res.status(200).json({
             message: "Transaction history fetched successfully",
-            count: transactions.length,
+            pagination: {
+                totalRecords: totalTransactions,
+                currentPage: page,
+                totalPages: Math.ceil(totalTransactions / limit),
+                hasNextPage: page * limit < totalTransactions,
+                hasPrevPage: page > 1
+            },
             transactions: transactions
         });
 
