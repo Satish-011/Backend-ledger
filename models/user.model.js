@@ -1,32 +1,32 @@
-// models/user.model.js
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs'); // bcryptjs import kiya
+const bcrypt = require('bcryptjs');
 
 const userSchema = new mongoose.Schema({
     name: { 
         type: String, 
-        required: true 
+        required: true,
+        trim: true 
     },
     email: { 
         type: String, 
         required: true, 
-        unique: true 
+        unique: true,
+        lowercase: true,
+        trim: true,
+        match: [/^\S+@\S+\.\S+$/, 'Please use a valid email address'] 
     },
     password: { 
         type: String, 
-        required: true 
+        required: true,
+        minlength: 8,
+        select: false // Hides password hash from API queries by default
     }
 }, { timestamps: true });
 
-// Data save hone se THEEK PEHLE ye function chalega
-userSchema.pre('save', async function() {
-    // Agar password change nahi hua hai, toh aage badh jao
-    if (!this.isModified('password')) return;
-
-    // Password ko hash karna (10 rounds of encryption)
+userSchema.pre('save', async function(next) {
+    if (!this.isModified('password')) return next();
     this.password = await bcrypt.hash(this.password, 10);
+    next();
 });
 
-const User = mongoose.model('User', userSchema);
-
-module.exports = User;
+module.exports = mongoose.model('User', userSchema);

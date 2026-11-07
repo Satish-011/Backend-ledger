@@ -1,21 +1,23 @@
-// models/account.model.js
 const mongoose = require('mongoose');
 
 const accountSchema = new mongoose.Schema({
-    // Ye batata hai ki ye account kis user ka hai
     userId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
-        required: true
+        required: true,
+        unique: true // Strictly enforces 1 User = 1 Account
     },
-    // Account mein kitne paise hain
     balance: {
         type: Number,
         required: true,
-        default: 0
+        default: 0,
+        min: 0 // Prevents negative balances
+    },
+    status: { 
+        type: String, 
+        enum: ['ACTIVE', 'SUSPENDED', 'FROZEN'], 
+        default: 'ACTIVE' 
     }
 }, { timestamps: true });
 
-const Account = mongoose.model('Account', accountSchema);
-
-module.exports = Account;
+module.exports = mongoose.model('Account', accountSchema);

@@ -1,18 +1,8 @@
-// models/blacklistedToken.model.js
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const blacklistedTokenSchema = new mongoose.Schema({
-    token: {
-        type: String,
-        required: true,
-        unique: true
-    },
-    // createdAt zaroori hai automatic delete (TTL) ke liye
-    createdAt: {
-        type: Date,
-        default: Date.now,
-        expires: 86400 // 86400 seconds = 1 day (uske baad DB se khud hat jayega)
-    }
+  token: { type: String, required: true, unique: true },
+  createdAt: { type: Date, default: Date.now, expires: 86400 }, // Auto-deletes after 1 day
 });
 
-module.exports = mongoose.model('BlacklistedToken', blacklistedTokenSchema);
+module.exports = mongoose.model("BlacklistedToken", blacklistedTokenSchema);

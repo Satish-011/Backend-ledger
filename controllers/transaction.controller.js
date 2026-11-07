@@ -1,202 +1,318 @@
-// controllers/transaction.controller.js
-const mongoose = require('mongoose');
-const User = require('../models/user.model');
-const Account = require('../models/account.model');
-const Transaction = require('../models/transaction.model');
-const Ledger = require('../models/ledger.model');
-const redis = require('../utils/redisClient'); // NAYA: Redis Import kiya
+const mongoose = require("mongoose");
+const User = require("../models/user.model");
+const Account = require("../models/account.model");
+const Transaction = require("../models/transaction.model");
+const Ledger = require("../models/ledger.model");
+const redis = require("../utils/redisClient");
+const emailQueue = require("../utils/emailQueue");
 
-// ==========================================
-// 1. TRANSFER MONEY
-// ==========================================
-const transferMoney = async (req, res) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
+const transferMoney = async (req, res, next) => {
+  const { receiverEmail, amount, idempotencyKey } = req.body;
+  const senderUserId = req.userId;
 
-    try {
-        const { receiverEmail, amount } = req.body;
-        const senderId = req.userId;
+  if (!idempotencyKey)
+    return res.status(400).json({ message: "idempotencyKey is required!" });
+  if (amount <= 0)
+    return res
+      .status(400)
+      .json({ message: "Amount must be greater than zero!" });
 
-        if (amount <= 0) throw new Error("Amount 0 se zyada hona chahiye!");
+  try {
+    const senderUser = await User.findById(senderUserId);
+    if (senderUser.email === receiverEmail)
+      return res
+        .status(400)
+        .json({ message: "Cannot send funds to yourself." });
 
-        const receiver = await User.findOne({ email: receiverEmail }).session(session);
-        if (!receiver) throw new Error("Jisko paise bhej rahe hain, wo email nahi mila.");
+    const senderAccount = await Account.findOne({ userId: senderUserId });
+    if (!senderAccount || senderAccount.status !== "ACTIVE")
+      return res.status(403).json({ message: "Sender account not active." });
 
-        if (senderId === receiver._id.toString()) throw new Error("Aap khud ko paise nahi bhej sakte!");
-
-        const senderAccount = await Account.findOne({ userId: senderId }).session(session);
-        const receiverAccount = await Account.findOne({ userId: receiver._id }).session(session);
-
-        if (senderAccount.balance < amount) throw new Error("Aapke account mein balance kam hai!");
-
-        senderAccount.balance -= amount;
-        receiverAccount.balance += amount;
-
-        await senderAccount.save({ session });
-        await receiverAccount.save({ session });
-
-        const transaction = new Transaction({
-            transactionType: 'TRANSFER',
-            senderId: senderId,
-            receiverId: receiver._id,
-            amount: amount,
-            status: 'SUCCESS'
+    // Idempotency Check
+    const existingTx = await Transaction.findOne({
+      senderId: senderAccount._id,
+      idempotencyKey,
+    });
+    if (existingTx)
+      return res
+        .status(200)
+        .json({
+          message: "Transaction already processed.",
+          transactionId: existingTx._id,
         });
-        await transaction.save({ session });
 
-        const debitEntry = new Ledger({ transactionId: transaction._id, accountId: senderAccount._id, type: 'DEBIT', amount: amount });
-        const creditEntry = new Ledger({ transactionId: transaction._id, accountId: receiverAccount._id, type: 'CREDIT', amount: amount });
-        
-        await debitEntry.save({ session });
-        await creditEntry.save({ session });
+    const receiverUser = await User.findOne({ email: receiverEmail });
+    if (!receiverUser)
+      return res.status(404).json({ message: "Receiver not found." });
 
-        await session.commitTransaction();
-        session.endSession();
+    const receiverAccount = await Account.findOne({ userId: receiverUser._id });
+    if (!receiverAccount || receiverAccount.status !== "ACTIVE")
+      return res.status(403).json({ message: "Receiver account not active." });
 
-        // CACHE INVALIDATION: Sender aur Receiver dono ki history badal gayi, toh dono ka cache delete kardo
-        await redis.del(`history:${senderId}`);
-        await redis.del(`history:${receiver._id}`);
-
-        res.status(200).json({ message: `Success! Rs ${amount} transferred to ${receiver.name}`, transactionId: transaction._id });
-    } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        res.status(400).json({ message: "Transaction failed", error: error.message });
-    }
-};
-
-// ==========================================
-// 2. DEPOSIT MONEY
-// ==========================================
-const depositMoney = async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-        const { amount } = req.body;
-        const userId = req.userId;
+      const lockedSender = await Account.findById(senderAccount._id).session(
+        session,
+      );
+      const lockedReceiver = await Account.findById(
+        receiverAccount._id,
+      ).session(session);
 
-        if (amount <= 0) throw new Error("Amount 0 se zyada hona chahiye!");
-
-        const account = await Account.findOne({ userId: userId }).session(session);
-        if (!account) throw new Error("Account nahi mila!");
-
-        account.balance += amount;
-        await account.save({ session });
-
-        const transaction = new Transaction({ transactionType: 'DEPOSIT', receiverId: userId, amount: amount, status: 'SUCCESS' });
-        await transaction.save({ session });
-
-        const ledgerEntry = new Ledger({ transactionId: transaction._id, accountId: account._id, type: 'CREDIT', amount: amount });
-        await ledgerEntry.save({ session });
-
-        await session.commitTransaction();
-        session.endSession();
-
-        // CACHE INVALIDATION: Balance update hua, purana cache delete karo
-        await redis.del(`history:${userId}`);
-
-        res.status(200).json({ message: `Success! Rs ${amount} deposited.`, newBalance: account.balance, transactionId: transaction._id });
-    } catch (error) {
+      if (lockedSender.balance < amount) {
         await session.abortTransaction();
         session.endSession();
-        res.status(400).json({ message: "Deposit failed", error: error.message });
-    }
-};
+        return res.status(400).json({ message: "Insufficient balance!" });
+      }
 
-// ==========================================
-// 3. WITHDRAW MONEY
-// ==========================================
-const withdrawMoney = async (req, res) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
+      lockedSender.balance -= amount;
+      lockedReceiver.balance += amount;
 
-    try {
-        const { amount } = req.body;
-        const userId = req.userId;
+      await lockedSender.save({ session });
+      await lockedReceiver.save({ session });
 
-        if (amount <= 0) throw new Error("Amount 0 se zyada hona chahiye!");
+      const transaction = new Transaction({
+        transactionType: "TRANSFER",
+        senderId: lockedSender._id,
+        receiverId: lockedReceiver._id,
+        amount,
+        idempotencyKey,
+        status: "SUCCESS",
+      });
+      await transaction.save({ session });
 
-        const account = await Account.findOne({ userId: userId }).session(session);
-        if (!account) throw new Error("Account nahi mila!");
-        if (account.balance < amount) throw new Error("Account mein sufficient balance nahi hai!");
+      await Ledger.create(
+        [
+          {
+            transactionId: transaction._id,
+            accountId: lockedSender._id,
+            type: "DEBIT",
+            amount,
+            balanceAfter: lockedSender.balance,
+          },
+          {
+            transactionId: transaction._id,
+            accountId: lockedReceiver._id,
+            type: "CREDIT",
+            amount,
+            balanceAfter: lockedReceiver.balance,
+          },
+        ],
+        { session },
+      );
 
-        account.balance -= amount;
-        await account.save({ session });
+      await session.commitTransaction();
+      session.endSession();
 
-        const transaction = new Transaction({ transactionType: 'WITHDRAWAL', senderId: userId, amount: amount, status: 'SUCCESS' });
-        await transaction.save({ session });
+      await redis.del(`history:${senderUserId}`);
+      await redis.del(`history:${receiverUser._id}`);
 
-        const ledgerEntry = new Ledger({ transactionId: transaction._id, accountId: account._id, type: 'DEBIT', amount: amount });
-        await ledgerEntry.save({ session });
+      await emailQueue.add("transfer-email", {
+        email: receiverUser.email,
+        subject: "Funds Received!",
+        html: `<p>You received Rs ${amount} from ${senderUser.name}.</p>`,
+      });
 
-        await session.commitTransaction();
-        session.endSession();
-
-        // CACHE INVALIDATION: Balance kam hua, purana cache delete karo
-        await redis.del(`history:${userId}`);
-
-        res.status(200).json({ message: `Success! Rs ${amount} withdrawn.`, newBalance: account.balance, transactionId: transaction._id });
+      res
+        .status(200)
+        .json({
+          message: `Success! Rs ${amount} transferred to ${receiverUser.name}`,
+          transactionId: transaction._id,
+        });
     } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        res.status(400).json({ message: "Withdrawal failed", error: error.message });
+      await session.abortTransaction();
+      session.endSession();
+      throw error;
     }
+  } catch (error) {
+    if (error.code === 11000)
+      return res
+        .status(200)
+        .json({ message: "Transaction processed concurrently." });
+    next(error);
+  }
 };
 
-// ==========================================
-// 4. GET TRANSACTION HISTORY (Redis Caching)
-// ==========================================
+const depositMoney = async (req, res, next) => {
+  const { amount, idempotencyKey } = req.body;
+  if (!idempotencyKey)
+    return res.status(400).json({ message: "idempotencyKey is required!" });
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const account = await Account.findOne({ userId: req.userId }).session(
+      session,
+    );
+
+    const existingTx = await Transaction.findOne({
+      receiverId: account._id,
+      idempotencyKey,
+    }).session(session);
+    if (existingTx) {
+      await session.abortTransaction();
+      session.endSession();
+      return res
+        .status(200)
+        .json({ message: "Already deposited", transactionId: existingTx._id });
+    }
+
+    account.balance += amount;
+    await account.save({ session });
+
+    const transaction = new Transaction({
+      transactionType: "DEPOSIT",
+      receiverId: account._id,
+      amount,
+      idempotencyKey,
+      status: "SUCCESS",
+    });
+    await transaction.save({ session });
+
+    await Ledger.create(
+      [
+        {
+          transactionId: transaction._id,
+          accountId: account._id,
+          type: "CREDIT",
+          amount,
+          balanceAfter: account.balance,
+        },
+      ],
+      { session },
+    );
+
+    await session.commitTransaction();
+    session.endSession();
+
+    await redis.del(`history:${req.userId}`);
+    res
+      .status(200)
+      .json({
+        message: `Success! Rs ${amount} deposited.`,
+        newBalance: account.balance,
+        transactionId: transaction._id,
+      });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    next(error);
+  }
+};
+
+const withdrawMoney = async (req, res, next) => {
+  const { amount, idempotencyKey } = req.body;
+  if (!idempotencyKey)
+    return res.status(400).json({ message: "idempotencyKey is required!" });
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const account = await Account.findOne({ userId: req.userId }).session(
+      session,
+    );
+    if (account.balance < amount) throw new Error("Insufficient balance!");
+
+    const existingTx = await Transaction.findOne({
+      senderId: account._id,
+      idempotencyKey,
+    }).session(session);
+    if (existingTx) {
+      await session.abortTransaction();
+      session.endSession();
+      return res
+        .status(200)
+        .json({ message: "Already withdrawn", transactionId: existingTx._id });
+    }
+
+    account.balance -= amount;
+    await account.save({ session });
+
+    const transaction = new Transaction({
+      transactionType: "WITHDRAWAL",
+      senderId: account._id,
+      amount,
+      idempotencyKey,
+      status: "SUCCESS",
+    });
+    await transaction.save({ session });
+
+    await Ledger.create(
+      [
+        {
+          transactionId: transaction._id,
+          accountId: account._id,
+          type: "DEBIT",
+          amount,
+          balanceAfter: account.balance,
+        },
+      ],
+      { session },
+    );
+
+    await session.commitTransaction();
+    session.endSession();
+
+    await redis.del(`history:${req.userId}`);
+    res
+      .status(200)
+      .json({
+        message: `Success! Rs ${amount} withdrawn.`,
+        newBalance: account.balance,
+        transactionId: transaction._id,
+      });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    next(error);
+  }
+};
+
 const getHistory = async (req, res) => {
-    try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const skip = (page - 1) * limit;
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
 
-        // 1. Cache Keys (User ki history ek hash map me save hogi, field usko page number hoga)
-        const hashKey = `history:${req.userId}`;
-        const fieldKey = `page:${page}:limit:${limit}`;
+    const hashKey = `history:${req.userId}`;
+    const fieldKey = `page:${page}:limit:${limit}`;
 
-        // 2. CHECK REDIS (Cache Hit ya Miss)
-        const cachedHistory = await redis.hget(hashKey, fieldKey);
-        
-        if (cachedHistory) {
-            console.log(`[Cache Hit] Redis se history aayi user: ${req.userId} ke liye`);
-            return res.status(200).json(JSON.parse(cachedHistory)); // Redis hamesha string deta hai, usko parse karna padta hai
-        }
+    const cachedHistory = await redis.hget(hashKey, fieldKey);
+    if (cachedHistory) return res.status(200).json(JSON.parse(cachedHistory));
 
-        console.log(`[Cache Miss] MongoDB se history nikal raha hu user: ${req.userId} ke liye`);
+    const userAccount = await Account.findOne({ userId: req.userId });
+    const queryCondition = {
+      $or: [{ senderId: userAccount._id }, { receiverId: userAccount._id }],
+    };
 
-        // 3. Database Query (Kyunki cache mein nahi tha)
-        const queryCondition = { $or: [{ senderId: req.userId }, { receiverId: req.userId }] };
-        const totalTransactions = await Transaction.countDocuments(queryCondition);
-        const transactions = await Transaction.find(queryCondition)
-            .populate('senderId', 'name email')
-            .populate('receiverId', 'name email')
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit);
+    const totalTransactions = await Transaction.countDocuments(queryCondition);
+    const transactions = await Transaction.find(queryCondition)
+      .populate("senderId")
+      .populate("receiverId")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
-        const responseData = {
-            message: "Transaction history fetched successfully",
-            pagination: {
-                totalRecords: totalTransactions,
-                currentPage: page,
-                totalPages: Math.ceil(totalTransactions / limit),
-                hasNextPage: page * limit < totalTransactions,
-                hasPrevPage: page > 1
-            },
-            transactions: transactions
-        };
+    const responseData = {
+      message: "Transaction history fetched successfully",
+      pagination: {
+        totalRecords: totalTransactions,
+        currentPage: page,
+        totalPages: Math.ceil(totalTransactions / limit),
+      },
+      transactions,
+    };
 
-        // 4. SAVE TO REDIS
-        await redis.hset(hashKey, fieldKey, JSON.stringify(responseData));
-        await redis.expire(hashKey, 300); // 5 minute (300 sec) ki general expiry tak ki RAM free rahe
+    await redis.hset(hashKey, fieldKey, JSON.stringify(responseData));
+    await redis.expire(hashKey, 300);
 
-        res.status(200).json(responseData);
-    } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
-    }
+    res.status(200).json(responseData);
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
 };
 
 module.exports = { transferMoney, depositMoney, withdrawMoney, getHistory };

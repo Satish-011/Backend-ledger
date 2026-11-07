@@ -1,4 +1,3 @@
-// controllers/auth.controller.js
 const User = require('../models/user.model');
 const Account = require('../models/account.model');
 const bcrypt = require('bcryptjs');
@@ -12,16 +11,11 @@ const register = async (req, res, next) => {
         const { name, email, password } = req.body;
 
         const existingUser = await User.findOne({ email });
-        if (existingUser) {
-            throw new ConflictError("Email already in use!", "EMAIL_EXISTS");
-        }
+        if (existingUser) throw new ConflictError("Email already in use!", "EMAIL_EXISTS");
 
         const newUser = await User.create({ name, email, password });
 
-        await Account.create({
-            userId: newUser._id,
-            balance: 5000 
-        });
+        await Account.create({ userId: newUser._id, balance: 5000 });
 
         const htmlTemplate = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; padding: 20px;">
@@ -39,11 +33,11 @@ const register = async (req, res, next) => {
 
         res.status(201).json({ 
             success: true,
-            message: "User account created! Welcome email queued in background.", 
+            message: "User account created! Welcome email queued.", 
             user: { _id: newUser._id, name: newUser.name, email: newUser.email } 
         });
     } catch (error) {
-        next(error); // Error seedha errorHandler ke paas chali jayegi
+        next(error);
     }
 };
 
@@ -51,7 +45,8 @@ const login = async (req, res, next) => {
     try {
         const { email, password } = req.body;
         
-        const user = await User.findOne({ email });
+        // .select('+password') is required because we set select: false in the model
+        const user = await User.findOne({ email }).select('+password');
         if (!user) throw new BadRequestError("User not found!", "USER_NOT_FOUND");
 
         const isPasswordMatch = await bcrypt.compare(password, user.password);
@@ -74,23 +69,16 @@ const login = async (req, res, next) => {
 const logout = async (req, res, next) => {
     try {
         const token = req.cookies.jwt;
-
         if (token) {
             const decoded = jwt.decode(token);
             if (decoded && decoded.exp) {
-                const currentTime = Math.floor(Date.now() / 1000);
-                const timeLeft = decoded.exp - currentTime;
+                const timeLeft = decoded.exp - Math.floor(Date.now() / 1000);
                 if (timeLeft > 0) {
                     await redis.setex(`blacklist_token:${token}`, timeLeft, 'blocked');
                 }
             }
         }
-
-        res.cookie('jwt', '', {
-            httpOnly: true,
-            expires: new Date(0)
-        });
-
+        res.cookie('jwt', '', { httpOnly: true, expires: new Date(0) });
         res.status(200).json({ success: true, message: "Logout successful!" });
     } catch (error) {
         next(new InternalServerError(error.message));
