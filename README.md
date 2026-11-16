@@ -1,77 +1,49 @@
-Backend Ledger
+# Backend Ledger
 
-A REST API for a simulated wallet built with Node.js, Express, MongoDB and Redis. Each user opens a wallet at ₹0. The API supports session-based access with a JWT cookie, transaction history, receipt lookup and optional email notifications.
+A REST API for a simulated wallet built with Node.js, Express, MongoDB, Redis, and BullMQ. Each user starts with a ₹0 balance. The project demonstrates how to record money movements, handle payment retries, and send email notifications from a separate worker.
 
-What the system provides
+## What the system provides
 
-Account registration and wallet creation in one MongoDB transaction.
+- **Accounts and authentication.** Registration creates a user and wallet in one MongoDB transaction. Login sets a one-day JWT cookie. Logout revokes the token in Redis.
+- **Wallet operations.** Users can transfer whole rupees by receiver email. A development setting enables simulated deposits and withdrawals.
+- **Payment receipts.** Each money movement carries an idempotency key. Clients can use that key to retrieve a receipt after losing an HTTP response.
+- **Ledger history.** Each movement builds a debit and a credit. Users can page through their own transactions and see the counterparty’s name and email.
+- **Background notifications.** With email enabled, the API records a notification event in MongoDB. A separate worker dispatches it through BullMQ and sends it using Gmail OAuth2.
 
-Password hashing with bcrypt, a one-day login cookie and logout through token revocation in Redis.
+> **Current payment status in v2.0.0:** The money service calls `Ledger.create(postings, { session })` with two entries. The locked Mongoose version requires `ordered: true` for this operation. New deposits, withdrawals, and transfers that reach this write abort before commit. The payment walkthrough below gives the expected results after changing the call to `await Ledger.create(postings, { session, ordered: true })`.
 
-Transfer by receiver email, with a per-user idempotency key for recovering a payment receipt after a lost response.
+## Components
 
-Whole-rupee amounts and a two-entry journal for transfers, demo deposits and demo withdrawals.
+| Component | Main technology | Responsibility |
+|---|---|---|
+| HTTP API | Node.js 22, Express 5 | Routing, validation, authentication, and HTTP responses |
+| Database | MongoDB 7 replica set, Mongoose 9 | Users, account balances, transaction receipts, ledger entries, and outbox events |
+| Redis | Redis 7, ioredis | Rate limits, revoked sessions, and BullMQ jobs |
+| Email worker | BullMQ, Nodemailer | Dispatch pending events and send email through Gmail OAuth2 |
+| Authentication | bcryptjs, jsonwebtoken, cookie-parser | Password hashing, token verification, and login cookies |
+| Operations | Docker Compose, Winston | Local services and structured application logs |
 
-Paginated history from MongoDB. Counterparty details include name and email.
+## Architecture
 
-Optional welcome and transfer emails delivered by a separate BullMQ worker.
-
-Payment status in version 2.0.0. The supplied money service passes two postings to Mongoose with Ledger.create(postings, { session }). The locked Mongoose version requires ordered: true for that call. New money movements that reach this write abort before commit. The payment lifecycle and sample balances below describe the intended behavior after this correction.
-
-Components
-
-Component
-
-Entry point or address
-
-Responsibility
-
-Express API
-
-server.js, localhost:3000
-
-HTTP routes, authentication, validation and wallet operations
-
-MongoDB replica set
-
-MONGO_URL
-
-Users, balances, receipts, ledger postings and outbox events
-
-Redis
-
-REDIS_URL
-
-Sliding-window rate limits, revoked sessions and BullMQ jobs
-
-Email worker
-
-worker.js
-
-Dispatch outbox events, consume jobs and send mail through Gmail OAuth2
-
-Tech stack
-
-Node.js 22, Express 5 and Mongoose 9 power the API. Docker Compose supplies MongoDB 7 and Redis 7. The project uses ioredis and BullMQ for Redis operations, Nodemailer for SMTP, Helmet for HTTP headers and Winston for structured logging.
-
-Architecture
-
+```mermaid
 flowchart TD
     Client["Postman or browser"] --> API["Express routes and middleware"]
-    API --> Controller["HTTP controllers"]
+    API --> Controllers["HTTP controllers"]
     API --> Redis[("Redis")]
-    Controller --> Service["Money service"]
-    Controller --> DB[("MongoDB replica set")]
-    Service --> DB
+    Controllers --> Money["Money service"]
+    Controllers --> DB[("MongoDB replica set")]
+    Money --> DB
     DB -->|Pending outbox events| Dispatcher["Outbox dispatcher"]
     Dispatcher --> Queue["BullMQ queue in Redis"]
     Queue --> Worker["Email consumer"]
-    Worker --> SMTP["Gmail SMTP"]
+    Worker --> Gmail["Gmail SMTP"]
+```
 
-The dispatcher and email consumer run in the worker process. The API can record a notification alongside the payment, so sending mail happens outside the database transaction.
+`server.js` starts the API. `worker.js` runs the outbox dispatcher and email consumer in a separate process. A payment can therefore record its notification in the same database transaction as its receipt, while the SMTP call happens later.
 
-Data model
+## Data model
 
+```mermaid
 erDiagram
     USER ||--o| ACCOUNT : owns
     USER ||--o{ TRANSACTION : initiates
@@ -79,143 +51,76 @@ erDiagram
     ACCOUNT o|--o{ TRANSACTION : receives
     TRANSACTION ||--|{ LEDGER : records
     ACCOUNT o|--o{ LEDGER : affects
+```
 
-Model
+| Model | What it stores |
+|---|---|
+| `User` | Name, normalized unique email, and password hash |
+| `Account` | Owner, wallet balance, and account status. Each user can own one wallet. |
+| `Transaction` | Initiator, operation, amount, sender or receiver, status, idempotency key, and request fingerprint. The initiator and key form a unique pair. |
+| `Ledger` | Transaction ID, posting index, debit or credit, amount, and the wallet or clearing side. Wallet entries also record the resulting balance. |
+| `Outbox` | Notification payload, unique event key, dispatch status, and lease expiry so a worker can claim pending work |
 
-Main fields and constraints
+## Request lifecycles
 
-User
+### Money transfer
 
-Name, normalized unique email and password hash
+Suppose Asha has ₹1,000 and sends ₹200 to Ravi.
 
-Account
+1. The API identifies Asha from her login cookie and reads the receiver email, amount, and idempotency key.
+2. The money service looks for an existing receipt under **Asha’s user ID and that key**. A matching request returns the earlier receipt.
+3. For a new payment, the service resolves both wallets. The debit checks that Asha’s account is active and has at least ₹200 in the same database update that subtracts the funds.
+4. The service credits Ravi, creates a receipt, and builds two postings: a ₹200 debit for Asha and a ₹200 credit for Ravi.
+5. The balance updates, receipt, postings, and optional email event share one MongoDB transaction. After a successful commit, Asha has ₹800 and Ravi’s balance has increased by ₹200.
 
-Unique user reference, wallet balance and account status
+### Idempotency and recovery
 
-Transaction
+Use the `Idempotency-Key` HTTP header or the `idempotencyKey` field in the JSON body. If you send both, their values must match. Keys accept 8–100 letters, digits, dots, underscores, colons, or hyphens.
 
-Initiating user, sender or receiver account, amount, operation, status, key and request fingerprint. The initiator and key form a unique pair.
+| Situation | Client behavior |
+|---|---|
+| The response was lost | Look up `GET /api/transactions/by-key/:key` using the sender’s session. Retry the original request with the same key if needed. |
+| The same payment already committed | A matching retry returns the original transaction ID and `replayed: true`. |
+| The amount, receiver, or operation changed | Reusing the key returns HTTP 422 with `IDEMPOTENCY_KEY_REUSED`. |
+| The user intentionally starts another payment | Generate a new key for that payment. |
 
-Ledger
+### Demo funding and ledger entries
 
-Transaction, posting index, debit or credit, amount, and wallet or clearing side. Each transaction and posting index form a unique pair.
+A wallet-to-wallet transfer uses two customer accounts. A simulated deposit or withdrawal uses `DEMO_CLEARING` as the opposite side of the journal entry. Amounts are positive JSON integers in whole rupees. For example, send `200` rather than `"200"` or `200.50`.
 
-Outbox
+### Sessions, history, and rate limits
 
-Unique event key, notification payload, dispatch status and lease expiry. The worker uses the lease to claim pending work.
+- Login sets an `HttpOnly` cookie with `SameSite=Strict`. The cookie also uses `Secure` in production.
+- Logout stores a hash of the verified token in Redis until the token expires, then clears the cookie.
+- History is read directly from MongoDB and ordered by creation time and transaction ID. The default page size is 10 and the maximum is 50.
+- Redis enforces per-IP sliding windows of 10 requests per 15 minutes for the auth route group and 100 per 15 minutes for the transaction route group.
 
-Request lifecycles
+## HTTP API
 
-Money transfer
+Base URL for local development: `http://localhost:3000`.
 
-The controller reads the JWT-authenticated sender, receiver email, integer amount and idempotency key.
+| Method | Endpoint | Purpose | Login required |
+|---|---|---|---|
+| `GET` | `/` | Project information | No |
+| `GET` | `/health` | Check that the API process responds | No |
+| `GET` | `/ready` | Check MongoDB and Redis readiness | No |
+| `POST` | `/api/auth/register` | Create a user and wallet | No |
+| `POST` | `/api/auth/login` | Set the login cookie | No |
+| `POST` | `/api/auth/logout` | Revoke the current session | Yes |
+| `GET` | `/api/users/profile` | View your profile and wallet balance | Yes |
+| `POST` | `/api/transactions/deposit` | Add demo funds | Yes |
+| `POST` | `/api/transactions/withdraw` | Withdraw demo funds | Yes |
+| `POST` | `/api/transactions/transfer` | Transfer to another user by email | Yes |
+| `GET` | `/api/transactions/history?page=1&limit=10` | View your transaction history | Yes |
+| `GET` | `/api/transactions/by-key/:key` | Recover a receipt for your key | Yes |
 
-Inside a MongoDB transaction, the service checks for an existing receipt. A matching fingerprint returns the earlier transaction ID. Changing the receiver, amount or operation with that key returns HTTP 422.
+Deposits and withdrawals also require `ENABLE_DEMO_FUNDING=true`.
 
-For a new payment, the service resolves the accounts and conditionally debits the sender only if active and sufficiently funded. It credits the receiver subject to the balance limit.
+## Error responses
 
-The service writes the receipt, paired postings and any enabled transfer email event in the same session. For a ₹200 transfer from Asha to Ravi, the journal records a ₹200 debit for Asha and a ₹200 credit for Ravi.
+Errors include a machine-readable code. For example, sending an amount as a string produces:
 
-If the client loses its response, it can look up the receipt by key or retry the original payload with the same key.
-
-Supply the key using the Idempotency-Key header or the idempotencyKey JSON field. When both are present they must match. Keys accept 8–100 letters, digits, dots, underscores, colons or hyphens.
-
-Registration, logout and history
-
-Registration creates the user and zero-balance wallet together. When email is enabled it also records a welcome event. Login sets an HttpOnly cookie with SameSite=Strict and a one-day lifetime. Logout stores a hash of the verified token in Redis for its remaining lifetime and clears the cookie.
-
-History queries MongoDB for transactions involving the current wallet. Results are ordered by creation time and ID. The default page size is 10 and the maximum is 50. Redis applies a limit per IP of 10 auth requests or 100 transaction requests per 15-minute window in their respective route groups.
-
-Journal entries and demo funding
-
-Each movement builds two postings. Deposits and withdrawals use DEMO_CLEARING as the opposite side of the wallet entry. Wallet postings record the resulting balance. Model hooks reject common updates and deletes to existing ledger rows. Direct database access requires separate access controls.
-
-HTTP API
-
-Method
-
-Path
-
-Purpose
-
-GET
-
-/
-
-Project information
-
-GET
-
-/health
-
-Process liveness
-
-GET
-
-/ready
-
-MongoDB and Redis readiness
-
-POST
-
-/api/auth/register
-
-Create user and wallet
-
-POST
-
-/api/auth/login
-
-Set the login cookie
-
-POST
-
-/api/auth/logout
-
-Revoke the current session
-
-GET
-
-/api/users/profile
-
-Read own profile and balance
-
-POST
-
-/api/transactions/deposit
-
-Add demo funds
-
-POST
-
-/api/transactions/withdraw
-
-Withdraw demo funds
-
-POST
-
-/api/transactions/transfer
-
-Transfer to a receiver by email
-
-GET
-
-/api/transactions/history
-
-Page through own transactions
-
-GET
-
-/api/transactions/by-key/:key
-
-Recover own receipt
-
-Register, login and the service information routes are public. Logout, profile and all transaction routes require the login cookie. Deposits and withdrawals also require ENABLE_DEMO_FUNDING=true.
-
-Error responses
-
-A rejected request includes a machine-readable code. For example, sending a text amount such as "200" produces:
-
+```json
 {
   "success": false,
   "error": {
@@ -223,234 +128,230 @@ A rejected request includes a machine-readable code. For example, sending a text
     "message": "amount must be a NUMBER (integer) between 1 and 1000000000"
   }
 }
+```
 
-HTTP status
+| HTTP status | Example code | Meaning |
+|---|---|---|
+| `400` | `INVALID_AMOUNT` | Amount validation failed |
+| `401` | `INVALID_CREDENTIALS` | Login credentials were rejected |
+| `403` | `DEMO_FUNDING_DISABLED` | Demo deposits and withdrawals are disabled |
+| `404` | `TRANSACTION_NOT_FOUND` | No committed receipt was found for this user and key |
+| `409` | `EMAIL_EXISTS` | The email is already registered |
+| `422` | `IDEMPOTENCY_KEY_REUSED` | The key belongs to a different request |
+| `429` | `RATE_LIMITED` | The request limit was reached |
+| `503` | `TRANSACTION_OUTCOME_UNKNOWN` | Check the receipt and retry with the original key |
 
-Example code
+## Local setup
 
-Meaning
+### Option 1 — Docker Compose
 
-401
+Install Docker Desktop or Docker Engine with Compose. Open a terminal in the project root, where `docker-compose.yml` and `package.json` are located. If you are reusing an existing database, read the [migration guide](docs/MIGRATION.md) first.
 
-INVALID_CREDENTIALS
+**1. Create your local environment file.**
 
-Login credentials were rejected
+Windows PowerShell:
 
-403
+```powershell
+Copy-Item .env.example .env
+```
 
-DEMO_FUNDING_DISABLED
+macOS or Linux:
 
-The local funding switch is off
+```bash
+cp .env.example .env
+```
 
-404
+**2. Configure `.env`.**
 
-TRANSACTION_NOT_FOUND
+Set `JWT_SECRET` to a private random value of at least 32 characters. If Node.js is installed, generate one locally:
 
-No committed receipt for this user and key
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
 
-409
+For local wallet practice, set:
 
-EMAIL_EXISTS
+```env
+ENABLE_DEMO_FUNDING=true
+EMAIL_ENABLED=false
+```
 
-The email is already registered
+**3. Start the services.**
 
-422
+```bash
+docker compose up --build -d
+docker compose ps
+```
 
-IDEMPOTENCY_KEY_REUSED
+Compose starts MongoDB, initializes a single-member replica set, starts Redis, and launches the API and worker. Open `http://localhost:3000/ready` and look for `{"ready":true}`.
 
-The key belongs to a different request
+To inspect startup logs:
 
-429
+```bash
+docker compose logs --tail=80 api mongo-init
+```
 
-RATE_LIMITED
+To stop the services while preserving the named data volumes:
 
-The request window is full
+```bash
+docker compose down
+```
 
-503
+### Option 2 — Run Node.js locally
 
-TRANSACTION_OUTCOME_UNKNOWN
+Use Node.js 22 with a current patch release, a reachable MongoDB replica set, and Redis. The replica set must advertise a hostname your local Node process can resolve. Prepare `.env` as above, then run:
 
-Check the receipt and retry with the original key
-
-Local setup
-
-Docker Compose
-
-Use Docker Desktop or Docker Engine with Compose. Open a terminal in the folder containing package.json. For an existing database, read the migration guide first.
-
-In PowerShell run Copy-Item .env.example .env. On macOS/Linux use cp .env.example .env.
-
-Set a private JWT_SECRET in .env. With Node installed, generate one locally using node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))".
-
-For the walkthrough set ENABLE_DEMO_FUNDING=true and leave EMAIL_ENABLED=false.
-
-Run docker compose up --build -d, then docker compose ps. Open http://localhost:3000/ready and look for ready=true. For startup errors use docker compose logs --tail=80 api mongo-init.
-
-Stop the services with docker compose down. The named volumes retain the demo data.
-
-Compose starts MongoDB 7, initializes a single-member replica set, starts Redis 7, then starts the API and worker. Its internal database hostnames are mongo and redis. Keep PORT=3000 with the supplied port mapping.
-
-Run Node locally
-
-Install a current Node.js 22 LTS patch or newer compatible release, prepare .env as above, and provide a reachable MongoDB replica set and Redis. The replica set must advertise a hostname your Node process can resolve. From the project root run:
-
+```bash
 npm ci
 npm run check
 npm start
+```
 
-Use npm run dev for automatic restarts. Run npm run worker in a second terminal for email jobs. Use npm run indexes to list database indexes using the configured MongoDB connection.
+| Command | Purpose |
+|---|---|
+| `npm start` | Start the API |
+| `npm run dev` | Start the API with automatic restarts |
+| `npm run worker` | Start the background worker in a second terminal |
+| `npm run check` | Check JavaScript syntax |
+| `npm run indexes` | Inspect indexes in the configured MongoDB database |
 
-Try it
+## Try it with Postman
 
-Use http://localhost:3000 as the base URL and select Body → raw → JSON for POST requests. Keep the Postman cookie jar enabled.
+Use **Body → raw → JSON** for POST requests and keep the Postman cookie jar enabled.
 
-Account walkthrough
+### 1. Register and sign in
 
-Send POST /api/auth/register with {"name":"Asha","email":"asha@example.com","password":"demo-pass-123"}. Repeat for Ravi using ravi@example.com.
+Send `POST /api/auth/register`:
 
-Send POST /api/auth/login with Asha’s email and password. Keep the returned cookie.
+```json
+{
+  "name": "Asha",
+  "email": "asha@example.com",
+  "password": "demo-pass-123"
+}
+```
 
-Send GET /api/users/profile. A new account should show a zero balance. Send GET /api/transactions/history?page=1&limit=10 to see its initial history.
+Register a second user named Ravi with `ravi@example.com`. Then send `POST /api/auth/login` as Asha:
 
-Payment walkthrough after the posting correction
+```json
+{
+  "email": "asha@example.com",
+  "password": "demo-pass-123"
+}
+```
 
-Step
+Call `GET /api/users/profile`. A new wallet starts at ₹0.
 
-Request
+### 2. Verify a payment after the posting correction
 
-What to check
+With demo funding enabled, send `POST /api/transactions/deposit`:
 
-Fund Asha’s wallet
+```json
+{
+  "amount": 1000,
+  "idempotencyKey": "deposit-asha-001"
+}
+```
 
-POST /api/transactions/deposit with {"amount":1000,"idempotencyKey":"deposit-demo-001"}
+Send `POST /api/transactions/transfer` and save the returned transaction ID:
 
-Asha’s balance reaches ₹1,000 with demo funding enabled.
+```json
+{
+  "receiverEmail": "ravi@example.com",
+  "amount": 200,
+  "idempotencyKey": "transfer-asha-ravi-001"
+}
+```
 
-Pay Ravi
+Send the **same transfer again**. The expected response contains the same transaction ID and `replayed: true`. Asha’s balance should still be ₹800. Using Ravi’s own session, his balance should be ₹200.
 
-POST /api/transactions/transfer with {"receiverEmail":"ravi@example.com","amount":200,"idempotencyKey":"transfer-demo-001"}
+As Asha, retrieve the receipt with `GET /api/transactions/by-key/transfer-asha-ravi-001`. Then change the amount to `300` while keeping the same key. The expected response is HTTP 422.
 
-Save the transaction ID. Asha has ₹800 and Ravi has ₹200.
+More request bodies and cookie-aware commands are in [API examples](docs/API_EXAMPLES.md).
 
-Retry
+## Configuration reference
 
-Repeat the transfer without changing the body.
+| Variable | Purpose |
+|---|---|
+| `JWT_SECRET` | Private signing key of at least 32 characters |
+| `MONGO_URL` | MongoDB replica-set connection URI |
+| `REDIS_URL` | Redis connection URI |
+| `NODE_ENV` | Runtime environment; defaults to `development` |
+| `PORT` | API port; defaults to `3000` |
+| `APP_ORIGIN` | Allowed browser client origin |
+| `ENABLE_DEMO_FUNDING` | Enables simulated deposits and withdrawals locally; defaults to `false` |
+| `EMAIL_ENABLED` | Enables email notifications; defaults to `false` |
+| `EMAIL_USER` | Gmail sender address when email is enabled |
+| `CLIENT_ID`, `CLIENT_SECRET`, `REFRESH_TOKEN` | Gmail OAuth2 credentials when email is enabled |
 
-The receipt ID stays the same. Check each balance using that user’s own login.
+Compose supplies internal MongoDB and Redis addresses for the API and worker. Keep `PORT=3000` with the supplied port mapping. Commit `.env.example` and keep your populated `.env` local.
 
-Recover the receipt
+## Repository layout
 
-As Asha, send GET /api/transactions/by-key/transfer-demo-001.
-
-The returned ID matches the transfer.
-
-End the session
-
-Send POST /api/auth/logout, then GET /api/users/profile.
-
-The profile requires a fresh login.
-
-The request examples include the registration bodies and cookie-aware commands.
-
-Configuration reference
-
-Variable
-
-Local configuration
-
-JWT_SECRET
-
-Required private random signing key, at least 32 characters. Replace the example placeholder.
-
-MONGO_URL
-
-MongoDB replica-set URI. Compose overrides it for the API and worker.
-
-REDIS_URL
-
-Redis URI. Compose supplies its internal address.
-
-NODE_ENV, PORT
-
-Defaults are development and 3000.
-
-APP_ORIGIN
-
-Origin of the browser client allowed to submit requests.
-
-ENABLE_DEMO_FUNDING
-
-Defaults to false. Enable locally to practice deposits and withdrawals.
-
-EMAIL_ENABLED
-
-Defaults to false. Enable for email notifications.
-
-EMAIL_USER, CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN
-
-Gmail OAuth2 settings. Required only when email is enabled.
-
-Repository layout
-
+```text
 Backend-ledger/
-  .dockerignore
-  .env.example
-  .gitignore
-  Dockerfile
-  README.md
-  app.js
-  controllers/
-    auth.controller.js
-    transaction.controller.js
-    user.controller.js
-  docker-compose.yml
-  docs/
-    API_EXAMPLES.md
-    FILE_BY_FILE.md
-    MIGRATION.md
-    MONEY_SERVICE_DEEP_DIVE.md
-  middlewares/
-    auth.middleware.js
-    errorHandler.js
-    origin.middleware.js
-    rateLimiter.js
-  models/
-    account.model.js
-    ledger.model.js
-    outbox.model.js
-    transaction.model.js
-    user.model.js
-  package-lock.json
-  package.json
-  routes/
-    auth.routes.js
-    transaction.routes.js
-    user.routes.js
-  scripts/
-    check-syntax.js
-    inspect-indexes.js
-  server.js
-  services/
-    money.service.js
-    outboxDispatcher.js
-  utils/
-    config.js
-    emailQueue.js
-    emailTemplates.js
-    error.js
-    idempotency.js
-    ledgerPostings.js
-    logger.js
-    mailer.js
-    queueRedis.js
-    redisClient.js
-    validation.js
-  worker.js
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── Dockerfile
+├── README.md
+├── app.js
+├── docker-compose.yml
+├── package.json
+├── package-lock.json
+├── server.js
+├── worker.js
+├── controllers/
+│   ├── auth.controller.js
+│   ├── transaction.controller.js
+│   └── user.controller.js
+├── docs/
+│   ├── API_EXAMPLES.md
+│   ├── FILE_BY_FILE.md
+│   ├── MIGRATION.md
+│   └── MONEY_SERVICE_DEEP_DIVE.md
+├── middlewares/
+│   ├── auth.middleware.js
+│   ├── errorHandler.js
+│   ├── origin.middleware.js
+│   └── rateLimiter.js
+├── models/
+│   ├── account.model.js
+│   ├── ledger.model.js
+│   ├── outbox.model.js
+│   ├── transaction.model.js
+│   └── user.model.js
+├── routes/
+│   ├── auth.routes.js
+│   ├── transaction.routes.js
+│   └── user.routes.js
+├── scripts/
+│   ├── check-syntax.js
+│   └── inspect-indexes.js
+├── services/
+│   ├── money.service.js
+│   └── outboxDispatcher.js
+└── utils/
+    ├── config.js
+    ├── emailQueue.js
+    ├── emailTemplates.js
+    ├── error.js
+    ├── idempotency.js
+    ├── ledgerPostings.js
+    ├── logger.js
+    ├── mailer.js
+    ├── queueRedis.js
+    ├── redisClient.js
+    └── validation.js
+```
 
-See the file reference and money service walkthrough for implementation details.
+## Limitations
 
-Current limitations and next steps
+- Funding and withdrawals are simulated. The project has no bank settlement or payout integration.
+- Amounts use whole rupees and a single currency.
+- The local Compose setup uses unauthenticated database services bound to localhost.
+- An email worker retry can result in duplicate delivery.
+- Mongoose hooks protect ledger entries against common application-level edits. Direct database access requires separate controls.
+- Existing data and indexes require a planned migration before using this version.
 
-This is an educational wallet with simulated funding and integer-rupee amounts. It has no external settlement or payout integration. Local Compose uses unauthenticated database services bound to localhost. Notification retries can result in duplicate emails. Existing databases require deliberate migration.
-
-The first verification step after correcting the ordered posting call is to repeat the same transfer and compare both wallets and the receipt ID. For an existing database, inspect the indexes and follow the migration guide before accepting new movements.
+For implementation details, see the [file-by-file reference](docs/FILE_BY_FILE.md), [money service walkthrough](docs/MONEY_SERVICE_DEEP_DIVE.md), and [migration guide](docs/MIGRATION.md).
